@@ -21,7 +21,7 @@ import { initScratchPad, exportPostcardPng } from "./ui/modals.js";
 // Application State
 // =====================================================================
 const state = {
-  lang: document.documentElement.lang === "he" ? "he" : "en",
+  lang: document.documentElement.lang === "en" ? "en" : "he",
   view: document.documentElement.dataset.view === "shelf" ? "shelf" : "desk",
   openRoom: null, // null | "workbench" | "archive" | "notebook" | "letters"
   selectedPrintIndex: 0,
