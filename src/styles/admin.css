@@ -650,7 +650,7 @@
 /* Password Lock Screen */
 .admin-dialog.is-locked {
   width: min(440px, calc(100vw - 28px));
-  height: auto;
+  height: fit-content;
   max-height: calc(100dvh - 28px);
 }
 
