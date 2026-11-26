@@ -124,8 +124,29 @@ function setByPath(root, path, value) {
   cur[path[path.length - 1]] = value;
 }
 
+const ADMIN_PASS_SALT = "orin-studio-v1:";
+const ADMIN_PASS_HASH = "44d7099f368593014d988910032ff23bb4727da73d8bf459680378c1856e08f3";
+const UNLOCK_SESSION_KEY = "orin-cms-unlocked-v1";
+
+async function sha256Hex(str) {
+  const bytes = new TextEncoder().encode(str);
+  const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export function initAdminStudio({ getSiteLang, onSiteRefresh }) {
   const adminState = {
+    unlocked: (() => {
+      try {
+        return sessionStorage.getItem(UNLOCK_SESSION_KEY) === ADMIN_PASS_HASH.slice(0, 16);
+      } catch {
+        return false;
+      }
+    })(),
+    lockError: "",
+    showPass: false,
     activeSection: "profile",
     editLang: getSiteLang() === "en" ? "en" : "he", // "he" | "en" | "both"
     search: "",
@@ -923,7 +944,117 @@ export function initAdminStudio({ getSiteLang, onSiteRefresh }) {
   // ===================================================================
   // Main Dialog Render & Event Binding
   // ===================================================================
+  function renderLockScreen() {
+    const he = isHeUi();
+    dialog.classList.add("is-locked");
+    dialog.innerHTML = `
+      <form class="admin-lock-box" id="admin-lock-form" novalidate>
+        <div class="admin-lock-top">
+          <div class="admin-brand">
+            <span class="admin-lock-icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="11" width="16" height="10" rx="2"></rect>
+                <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
+              </svg>
+            </span>
+            <div>
+              <strong style="display:block;font:700 15px var(--headline);">${he ? "סטודיו ניהול תוכן" : "Content Studio"}</strong>
+              <small style="font:11px var(--mono);color:var(--muted);">orinwinberg.com</small>
+            </div>
+          </div>
+          <button type="button" class="admin-btn" id="admin-lock-close">${he ? "סגירה" : "Close"}</button>
+        </div>
+
+        <h2>${he ? "כניסה לניהול האתר" : "Enter Admin Password"}</h2>
+        <p>${
+          he
+            ? "הזיני את הסיסמה כדי לערוך טקסטים, ספרים, סרטונים וכפולות באתר."
+            : "Enter the password to edit texts, books, films, and pages on the site."
+        }</p>
+
+        <div class="admin-field">
+          <label for="admin-pass-input"><span>${he ? "סיסמה" : "Password"}</span></label>
+          <div class="admin-lock-input-wrap">
+            <input
+              type="${adminState.showPass ? "text" : "password"}"
+              id="admin-pass-input"
+              dir="ltr"
+              autocomplete="current-password"
+              placeholder="••••••••"
+              required
+            />
+            <button type="button" class="admin-btn" id="admin-pass-toggle">
+              ${adminState.showPass ? (he ? "הסתר" : "Hide") : he ? "הצג" : "Show"}
+            </button>
+          </div>
+        </div>
+
+        ${
+          adminState.lockError
+            ? `<div class="admin-msg is-err" role="alert">${esc(adminState.lockError)}</div>`
+            : ""
+        }
+
+        <div class="admin-lock-actions">
+          <span style="font:11.5px var(--mono);color:var(--muted);">${he ? "נשמר למשך הפעלת הדפדפן" : "Stays unlocked for this session"}</span>
+          <button type="submit" class="admin-btn is-berry" id="admin-pass-submit">
+            ${he ? "פתיחת הסטודיו" : "Unlock Studio"}
+          </button>
+        </div>
+      </form>
+    `;
+
+    const input = dialog.querySelector("#admin-pass-input");
+    const form = dialog.querySelector("#admin-lock-form");
+    dialog.querySelector("#admin-lock-close")?.addEventListener("click", closeAdmin);
+    dialog.querySelector("#admin-pass-toggle")?.addEventListener("click", () => {
+      const val = input?.value || "";
+      adminState.showPass = !adminState.showPass;
+      renderLockScreen();
+      const nextInput = dialog.querySelector("#admin-pass-input");
+      if (nextInput) {
+        nextInput.value = val;
+        nextInput.focus();
+      }
+    });
+
+    form?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const val = input?.value || "";
+      try {
+        const digest = await sha256Hex(ADMIN_PASS_SALT + val);
+        if (digest === ADMIN_PASS_HASH) {
+          adminState.unlocked = true;
+          adminState.lockError = "";
+          try {
+            sessionStorage.setItem(UNLOCK_SESSION_KEY, ADMIN_PASS_HASH.slice(0, 16));
+          } catch {}
+          renderAdminDialog();
+        } else {
+          adminState.lockError = he ? "הסיסמה שגויה. נסי שוב." : "Incorrect password. Please try again.";
+          renderLockScreen();
+          const retryInput = dialog.querySelector("#admin-pass-input");
+          if (retryInput) {
+            retryInput.value = "";
+            retryInput.focus();
+          }
+        }
+      } catch {
+        adminState.lockError = he ? "שגיאה באימות הסיסמה בדפדפן זה." : "Unable to verify password in this browser.";
+        renderLockScreen();
+      }
+    });
+
+    requestAnimationFrame(() => input?.focus());
+  }
+
   function renderAdminDialog() {
+    if (!adminState.unlocked) {
+      renderLockScreen();
+      return;
+    }
+
+    dialog.classList.remove("is-locked");
     const copy = ui();
     const he = isHeUi();
     const secMeta = copy.sections[adminState.activeSection];
@@ -963,6 +1094,7 @@ export function initAdminStudio({ getSiteLang, onSiteRefresh }) {
               ? `<button type="button" class="admin-btn is-berry" id="admin-jump-publish">${copy.publishQuickBtn}</button>`
               : ""
           }
+          <button type="button" class="admin-btn" id="admin-lock-btn" title="${he ? "נעילת פאנל ניהול" : "Lock Admin Panel"}">${he ? "נעילה" : "Lock"}</button>
           <button type="button" class="admin-btn" id="admin-close-btn">${copy.closeBtn}</button>
         </div>
       </header>
@@ -1028,6 +1160,14 @@ export function initAdminStudio({ getSiteLang, onSiteRefresh }) {
   function bindDialogEvents() {
     // Header buttons
     dialog.querySelector("#admin-close-btn")?.addEventListener("click", closeAdmin);
+    dialog.querySelector("#admin-lock-btn")?.addEventListener("click", () => {
+      adminState.unlocked = false;
+      adminState.lockError = "";
+      try {
+        sessionStorage.removeItem(UNLOCK_SESSION_KEY);
+      } catch {}
+      renderAdminDialog();
+    });
     dialog.querySelector("#admin-preview-btn")?.addEventListener("click", closeAdmin);
     dialog.querySelector("#admin-jump-publish")?.addEventListener("click", () => {
       adminState.activeSection = "publish";
