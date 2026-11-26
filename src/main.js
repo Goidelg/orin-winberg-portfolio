@@ -1,6 +1,7 @@
 import "./styles/tokens.css";
 import "./styles/shelf.css";
 import "./styles/studio.css";
+import "./styles/admin.css";
 
 import {
   PROFILE,
@@ -16,6 +17,8 @@ import { ICONS } from "./ui/icons.js";
 import { assetUrl } from "./utils/assetUrl.js";
 import { mountDeskScene } from "./desk/deskScene.js";
 import { initScratchPad, exportPostcardPng } from "./ui/modals.js";
+import { hydrateContent, onContentChange } from "./cms/contentStore.js";
+import { initAdminStudio } from "./cms/adminPanel.js";
 
 // =====================================================================
 // Application State
@@ -56,11 +59,25 @@ const state = {
 
 let deskApi = null;
 let scratchApi = null;
+let adminApi = null;
 let audioTimer = null;
 let audioCtx = null;
 
 function t() {
   return PROFILE[state.lang];
+}
+
+function visiblePrints() {
+  const list = FEATURED_PRINTS.filter((p) => !p.hidden);
+  return list.length ? list : [FEATURED_PRINTS[0]];
+}
+
+function visibleGallery() {
+  return GALLERY_ITEMS.filter((g) => !g.hidden);
+}
+
+function visibleCatalogue() {
+  return CATALOGUE_ITEMS.filter((c) => !c.hidden);
 }
 
 function playSoftChime(freq = 523.25) {
@@ -97,6 +114,7 @@ function setLang(nextLang) {
       : "Orin Winberg | Storytelling, Books, Film & AI Education";
   try { localStorage.setItem("orin-lang", nextLang); } catch {}
   renderAll();
+  adminApi?.refreshIfOpen();
 }
 
 function setView(nextView, updateHash = true) {
@@ -415,7 +433,9 @@ function renderScratchChrome() {
 // =====================================================================
 function renderBoringMode() {
   const copy = t();
-  const activePrint = FEATURED_PRINTS[state.selectedPrintIndex] || FEATURED_PRINTS[0];
+  const prints = visiblePrints();
+  if (state.selectedPrintIndex >= prints.length) state.selectedPrintIndex = 0;
+  const activePrint = prints[state.selectedPrintIndex] || prints[0];
 
   const mast = document.getElementById("mast");
   mast.innerHTML = `
@@ -466,7 +486,7 @@ function renderBoringMode() {
       <details class="print-index" id="print-index-details">
         <summary>${copy.printIndex} ${ICONS.chevronDown}</summary>
         <ul>
-          ${FEATURED_PRINTS.map(
+          ${prints.map(
             (pr, idx) => `
             <li>
               <button type="button" data-pick-print="${pr.id}" aria-current="${idx === state.selectedPrintIndex}">
@@ -485,7 +505,7 @@ function renderBoringMode() {
 
     <div class="display-case">
       <div class="shelf-track" id="shelf-track">
-        ${FEATURED_PRINTS.map((pr, idx) => {
+        ${prints.map((pr, idx) => {
           const offset = Math.max(-2, Math.min(2, idx - state.selectedPrintIndex));
           return `
             <div class="shelf-slide" data-slide-idx="${idx}" data-offset="${offset}">
@@ -518,7 +538,7 @@ function renderBoringMode() {
 
   shop.querySelectorAll("[data-pick-print]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const idx = FEATURED_PRINTS.findIndex((p) => p.id === btn.dataset.pickPrint);
+      const idx = prints.findIndex((p) => p.id === btn.dataset.pickPrint);
       if (idx >= 0) {
         state.selectedPrintIndex = idx;
         renderBoringMode();
@@ -530,7 +550,7 @@ function renderBoringMode() {
 
   shop.querySelectorAll("[data-open-print]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const idx = FEATURED_PRINTS.findIndex((p) => p.id === btn.dataset.openPrint);
+      const idx = prints.findIndex((p) => p.id === btn.dataset.openPrint);
       if (idx >= 0) state.selectedPrintIndex = idx;
       openPrintModal(btn.dataset.openPrint);
     });
@@ -538,19 +558,19 @@ function renderBoringMode() {
 
   shop.querySelector("#shelf-prev").addEventListener("click", () => {
     state.selectedPrintIndex =
-      (state.selectedPrintIndex - 1 + FEATURED_PRINTS.length) % FEATURED_PRINTS.length;
+      (state.selectedPrintIndex - 1 + prints.length) % prints.length;
     updateShelfActiveVisuals();
     scrollCarouselToIndex(state.selectedPrintIndex, true);
   });
 
   shop.querySelector("#shelf-next").addEventListener("click", () => {
-    state.selectedPrintIndex = (state.selectedPrintIndex + 1) % FEATURED_PRINTS.length;
+    state.selectedPrintIndex = (state.selectedPrintIndex + 1) % prints.length;
     updateShelfActiveVisuals();
     scrollCarouselToIndex(state.selectedPrintIndex, true);
   });
 
   shop.querySelector("#shelf-cta").addEventListener("click", () => {
-    openPrintModal(FEATURED_PRINTS[state.selectedPrintIndex].id);
+    openPrintModal(prints[state.selectedPrintIndex].id);
   });
 
   shop.querySelector("#shelf-screw").addEventListener("click", () => {
@@ -625,10 +645,12 @@ function renderBoringMode() {
         <a href="${PROFILE.linkedinUrl}" target="_blank" rel="noopener">LinkedIn</a>
         <a href="mailto:${PROFILE.email}">${PROFILE.email}</a>
         <button type="button" id="footer-resume-ql" style="background:none;border:0;padding:0;text-decoration:underline;color:var(--berry);font:inherit;">${state.lang === "he" ? "קורות חיים (תצוגה מהירה)" : "Quick-Look Resume"}</button>
+        <button type="button" id="footer-open-admin" style="background:none;border:0;padding:0;text-decoration:underline;color:var(--muted);font:inherit;opacity:0.8;">${state.lang === "he" ? "עריכת תוכן" : "Edit content"}</button>
       </nav>
     </div>
   `;
   footer.querySelector("#footer-resume-ql").addEventListener("click", () => openResumeQuickLook());
+  footer.querySelector("#footer-open-admin").addEventListener("click", () => adminApi?.openAdmin());
 }
 
 function renderMediaGallery() {
@@ -637,7 +659,8 @@ function renderMediaGallery() {
   const el = document.getElementById("media-gallery");
   if (!el) return;
 
-  const visible = GALLERY_ITEMS.filter(
+  const allVis = visibleGallery();
+  const visible = allVis.filter(
     (item) => state.galleryFilter === "all" || item.type === state.galleryFilter
   );
 
@@ -663,7 +686,7 @@ function renderMediaGallery() {
     <div class="gallery-grid">
       ${visible
         .map((item) => {
-          const globalIdx = GALLERY_ITEMS.indexOf(item);
+          const globalIdx = allVis.indexOf(item);
           const d = item[state.lang];
           const isVid = item.type === "video";
           const multiCount = item.pages && item.pages.length > 1 ? item.pages.length : 0;
@@ -706,8 +729,10 @@ function renderMediaGallery() {
 // UNIFIED QUICK-LOOK ARCHIVAL VIEWER (Multi-page Spreads, PDFs, Photos & HD Videos)
 // =====================================================================
 function openGalleryQuickLook(idx) {
-  const safeIdx = ((idx % GALLERY_ITEMS.length) + GALLERY_ITEMS.length) % GALLERY_ITEMS.length;
-  const item = GALLERY_ITEMS[safeIdx];
+  const allVis = visibleGallery();
+  if (!allVis.length) return;
+  const safeIdx = ((idx % allVis.length) + allVis.length) % allVis.length;
+  const item = allVis[safeIdx];
   recordStop(item.en.title, item.he.title, item.thumb);
   state.quickLook = {
     galleryIdx: safeIdx,
@@ -771,13 +796,14 @@ function renderQuickLook() {
 
   const top = document.getElementById("lightbox-top");
   const hasGalleryNav = ql.galleryIdx !== null;
+  const allVisLen = visibleGallery().length;
   top.innerHTML = `
     <button type="button" class="modal-close-btn" id="lb-close">${gal.close}</button>
     ${
       hasGalleryNav
         ? `<div class="turn-prints">
             <button type="button" id="lb-prev" aria-label="Previous item">${isHe ? ICONS.arrowRight : ICONS.arrowLeft}</button>
-            <span>${ql.galleryIdx + 1} / ${GALLERY_ITEMS.length}</span>
+            <span>${ql.galleryIdx + 1} / ${allVisLen}</span>
             <button type="button" id="lb-next" aria-label="Next item">${isHe ? ICONS.arrowLeft : ICONS.arrowRight}</button>
           </div>`
         : ql.pdfUrl
@@ -833,7 +859,8 @@ function renderQuickLook() {
 
 function updateShelfActiveVisuals() {
   const shop = document.getElementById("shop");
-  const pr = FEATURED_PRINTS[state.selectedPrintIndex];
+  const prints = visiblePrints();
+  const pr = prints[state.selectedPrintIndex] || prints[0];
   if (!shop || !pr) return;
   shop.dataset.selection = pr.id;
   const cta = shop.querySelector("#shelf-cta");
@@ -861,9 +888,10 @@ function scrollCarouselToIndex(idx, smooth = true) {
 // =====================================================================
 function openPrintModal(printId) {
   state.activeModalPrintId = printId;
-  const idx = FEATURED_PRINTS.findIndex((p) => p.id === printId);
+  const prints = visiblePrints();
+  const idx = prints.findIndex((p) => p.id === printId);
   if (idx >= 0) state.selectedPrintIndex = idx;
-  const pr = FEATURED_PRINTS[idx] || FEATURED_PRINTS[0];
+  const pr = prints[idx] || FEATURED_PRINTS.find((p) => p.id === printId) || prints[0];
   recordStop(pr.en.title, pr.he.title, pr.image);
   renderPrintModal(pr.id);
   const dlg = document.getElementById("print-dialog");
@@ -872,8 +900,9 @@ function openPrintModal(printId) {
 
 function renderPrintModal(printId) {
   const copy = t();
-  const idx = Math.max(0, FEATURED_PRINTS.findIndex((p) => p.id === printId));
-  const pr = FEATURED_PRINTS[idx];
+  const prints = visiblePrints();
+  const idx = Math.max(0, prints.findIndex((p) => p.id === printId));
+  const pr = prints.find((p) => p.id === printId) || FEATURED_PRINTS.find((p) => p.id === printId) || prints[0];
   const d = pr[state.lang];
   const isRtl = state.lang === "he";
 
@@ -884,7 +913,7 @@ function renderPrintModal(printId) {
     </button>
     <div class="turn-prints">
       <button type="button" id="modal-prev-print" aria-label="Previous">${isRtl ? ICONS.arrowRight : ICONS.arrowLeft}</button>
-      <span>${idx + 1} / ${FEATURED_PRINTS.length}</span>
+      <span>${idx + 1} / ${prints.length}</span>
       <button type="button" id="modal-next-print" aria-label="Next">${isRtl ? ICONS.arrowLeft : ICONS.arrowRight}</button>
     </div>
   `;
@@ -892,11 +921,11 @@ function renderPrintModal(printId) {
     document.getElementById("print-dialog").close();
   });
   top.querySelector("#modal-prev-print").addEventListener("click", () => {
-    const prev = FEATURED_PRINTS[(idx - 1 + FEATURED_PRINTS.length) % FEATURED_PRINTS.length];
+    const prev = prints[(idx - 1 + prints.length) % prints.length];
     openPrintModal(prev.id);
   });
   top.querySelector("#modal-next-print").addEventListener("click", () => {
-    const next = FEATURED_PRINTS[(idx + 1) % FEATURED_PRINTS.length];
+    const next = prints[(idx + 1) % prints.length];
     openPrintModal(next.id);
   });
 
@@ -1329,7 +1358,8 @@ function renderArchive(container) {
   const isHe = state.lang === "he";
   const q = state.catSearch.trim().toLowerCase();
 
-  const filtered = CATALOGUE_ITEMS.filter((item) => {
+  const allArchive = visibleCatalogue();
+  const filtered = allArchive.filter((item) => {
     const matchCat = state.catFilter === "all" || item.category === state.catFilter;
     if (!matchCat) return false;
     if (!q) return true;
@@ -1351,8 +1381,8 @@ function renderArchive(container) {
 
   const countFor = (catId) =>
     catId === "all"
-      ? CATALOGUE_ITEMS.length
-      : CATALOGUE_ITEMS.filter((i) => i.category === catId).length;
+      ? allArchive.length
+      : allArchive.filter((i) => i.category === catId).length;
 
   container.innerHTML = `
     <div class="archive-head">
@@ -1748,57 +1778,77 @@ function renderPostcardModal() {
 }
 
 // =====================================================================
-// BOOTSTRAP
+// BOOTSTRAP (Hydrates live content.json + local draft before rendering)
 // =====================================================================
-mountScaffold();
-renderAll();
-updateStudioOpenState();
+async function boot() {
+  await hydrateContent();
 
-const deskStage = document.getElementById("desk-overview");
-const deskCanvas = document.getElementById("desk-canvas");
-const hoverLabel = document.getElementById("desk-hover-label");
+  mountScaffold();
+  adminApi = initAdminStudio({
+    getSiteLang: () => state.lang,
+    onSiteRefresh: () => renderAll(),
+  });
+  onContentChange(() => {
+    renderAll();
+    adminApi?.updateDraftBanner();
+  });
 
-deskApi = mountDeskScene({
-  container: deskStage,
-  canvas: deskCanvas,
-  prints: FEATURED_PRINTS,
-  getPerformanceMode: () => state.performanceMode,
-  onHoverObject: (meta, x, y) => {
-    if (!meta) {
-      hoverLabel.classList.remove("visible");
-      return;
-    }
-    const copy = t();
-    let label = copy.deskTips[meta.id] || "";
-    if (meta.action === "print" && meta.printId && meta.id !== "milly") {
-      const pr = FEATURED_PRINTS.find((p) => p.id === meta.printId);
-      if (pr) label = pr[state.lang].title;
-    }
-    hoverLabel.textContent = label;
-    hoverLabel.style.left = `${x}px`;
-    hoverLabel.style.top = `${y}px`;
-    hoverLabel.classList.add("visible");
-  },
-  onSelectObject: (meta) => {
-    if (meta.action === "room") openRoom(meta.room);
-    else if (meta.action === "print") openPrintModal(meta.printId);
-    else if (meta.action === "scratch") {
-      renderScratchChrome();
-      scratchApi.open();
-    } else if (meta.action === "postcard") {
-      openPostcardModal();
-    }
-  },
-  onLampToggle: (isNight) => {
-    state.nightMode = isNight;
-    renderDeskChrome();
-  },
-  onDrawerToggle: () => {
-    setTimeout(() => openPostcardModal(), 420);
-  },
-});
+  renderAll();
+  updateStudioOpenState();
+  adminApi.updateDraftBanner();
 
-if (state.view === "shelf") {
-  deskApi?.setPaused(true);
-  requestAnimationFrame(() => scrollCarouselToIndex(state.selectedPrintIndex, false));
+  const deskStage = document.getElementById("desk-overview");
+  const deskCanvas = document.getElementById("desk-canvas");
+  const hoverLabel = document.getElementById("desk-hover-label");
+
+  deskApi = mountDeskScene({
+    container: deskStage,
+    canvas: deskCanvas,
+    prints: FEATURED_PRINTS,
+    getPerformanceMode: () => state.performanceMode,
+    onHoverObject: (meta, x, y) => {
+      if (!meta) {
+        hoverLabel.classList.remove("visible");
+        return;
+      }
+      const copy = t();
+      let label = copy.deskTips[meta.id] || "";
+      if (meta.action === "print" && meta.printId && meta.id !== "milly") {
+        const pr = FEATURED_PRINTS.find((p) => p.id === meta.printId);
+        if (pr) label = pr[state.lang].title;
+      }
+      hoverLabel.textContent = label;
+      hoverLabel.style.left = `${x}px`;
+      hoverLabel.style.top = `${y}px`;
+      hoverLabel.classList.add("visible");
+    },
+    onSelectObject: (meta) => {
+      if (meta.action === "room") openRoom(meta.room);
+      else if (meta.action === "print") openPrintModal(meta.printId);
+      else if (meta.action === "scratch") {
+        renderScratchChrome();
+        scratchApi.open();
+      } else if (meta.action === "postcard") {
+        openPostcardModal();
+      }
+    },
+    onLampToggle: (isNight) => {
+      state.nightMode = isNight;
+      renderDeskChrome();
+    },
+    onDrawerToggle: () => {
+      setTimeout(() => openPostcardModal(), 420);
+    },
+  });
+
+  if (state.view === "shelf") {
+    deskApi?.setPaused(true);
+    requestAnimationFrame(() => scrollCarouselToIndex(state.selectedPrintIndex, false));
+  }
+
+  if (location.hash === "#admin") {
+    adminApi.openAdmin();
+  }
 }
+
+boot();
